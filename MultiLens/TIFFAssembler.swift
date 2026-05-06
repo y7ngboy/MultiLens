@@ -72,17 +72,19 @@ final class TIFFAssembler {
             ]
 
             CGImageDestinationAddImage(dest, cgImage, properties as CFDictionary)
-
-            onProgress?(Double(pageIndex + 1) / 3.0 * 0.8)
+            onProgress?(Double(pageIndex + 1) / 3.0 * 0.7)
         }
+
+        onProgress?(0.75)
 
         guard CGImageDestinationFinalize(dest) else {
             return .failure(TIFFAssemblerError(message: "TIFF finalization failed"))
         }
 
-        onProgress?(0.9)
+        onProgress?(0.85)
 
-        // Save to photo library
+        let fileSize = fileSizeString(url: fileURL)
+
         let semaphore = DispatchSemaphore(value: 0)
         var saveError: Error?
 
@@ -90,7 +92,6 @@ final class TIFFAssembler {
             let request = PHAssetCreationRequest.forAsset()
             request.addResource(with: .photo, fileURL: fileURL, options: nil)
 
-            // Create or fetch album
             let fetchOptions = PHFetchOptions()
             fetchOptions.predicate = NSPredicate(format: "title == %@", "MultiLens")
             let album = PHAssetCollection.fetchAssetCollections(
@@ -113,40 +114,32 @@ final class TIFFAssembler {
 
         semaphore.wait()
 
-        if let saveError {
-            return .failure(saveError)
-        }
-
-        // Get file size
-        let fileSize = fileSizeString(url: fileURL)
-
-        // Cleanup temp file
         try? FileManager.default.removeItem(at: fileURL)
 
         onProgress?(1.0)
+
+        if let saveError {
+            return .failure(saveError)
+        }
 
         return .success(fileSize)
     }
 
     private func decodeToCGImage(photo: AVCapturePhoto) -> CGImage? {
-        // Try RAW DNG data first
         if let dngData = photo.fileDataRepresentation() {
             let ciImage = CIImage(data: dngData, options: [
                 .applyOrientationProperty: true
             ])
             if let ci = ciImage {
-                let extent = ci.extent
-                return ciContext.createCGImage(ci, from: extent, format: .RGBA16, colorSpace:
-                    CGColorSpace(name: CGColorSpace.displayP3)!)
+                return ciContext.createCGImage(ci, from: ci.extent, format: .RGBA16,
+                    colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!)
             }
         }
 
-        // Fallback to pixel buffer
         guard let pixelBuffer = photo.pixelBuffer else { return nil }
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let extent = ciImage.extent
-        return ciContext.createCGImage(ciImage, from: extent, format: .RGBA16, colorSpace:
-            CGColorSpace(name: CGColorSpace.displayP3)!)
+        return ciContext.createCGImage(ciImage, from: ciImage.extent, format: .RGBA16,
+            colorSpace: CGColorSpace(name: CGColorSpace.displayP3)!)
     }
 
     private func deviceMake(from photo: AVCapturePhoto) -> String {

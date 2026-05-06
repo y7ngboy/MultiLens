@@ -12,6 +12,8 @@
 		A1000003 /* CaptureCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000003; };
 		A1000004 /* TIFFAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000004; };
 		A1000005 /* CaptureView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000005; };
+		A1000006 /* Settings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000007; };
+		A1000007 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000008; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +23,8 @@
 		A2000004 /* TIFFAssembler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TIFFAssembler.swift; sourceTree = "<group>"; };
 		A2000005 /* CaptureView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureView.swift; sourceTree = "<group>"; };
 		A2000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000007 /* Settings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Settings.swift; sourceTree = "<group>"; };
+		A2000008 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A2000010 /* MultiLens.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MultiLens.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -51,6 +55,8 @@
 				A2000003 /* CaptureCoordinator.swift */,
 				A2000004 /* TIFFAssembler.swift */,
 				A2000005 /* CaptureView.swift */,
+				A2000007 /* Settings.swift */,
+				A2000008 /* SettingsView.swift */,
 				A2000006 /* Info.plist */,
 			);
 			path = MultiLens;
@@ -137,6 +143,8 @@
 				A1000003 /* CaptureCoordinator.swift in Sources */,
 				A1000004 /* TIFFAssembler.swift in Sources */,
 				A1000005 /* CaptureView.swift in Sources */,
+				A1000006 /* Settings.swift in Sources */,
+				A1000007 /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
