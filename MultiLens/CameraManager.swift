@@ -279,11 +279,31 @@ final class CameraManager: NSObject, ObservableObject {
             return
         }
 
-        for output in [ultraWideOutput, wideOutput, telephotoOutput] {
+        let devices = [ultraWideDev, wideDev, telephoneDev]
+        let outputs = [ultraWideOutput, wideOutput, telephotoOutput]
+
+        for (device, output) in zip(devices, outputs) {
             if multiCamSession.canAddOutput(output) {
                 multiCamSession.addOutput(output)
             }
+
+            // Force highest resolution format (48MP where available)
+            if let maxFormat = device.formats
+                .filter({ $0.isHighestPhotoQualitySupported })
+                .max(by: {
+                    let d0 = CMVideoFormatDescriptionGetDimensions($0.formatDescription)
+                    let d1 = CMVideoFormatDescriptionGetDimensions($1.formatDescription)
+                    return (Int(d0.width) * Int(d0.height)) < (Int(d1.width) * Int(d1.height))
+                }) {
+                do {
+                    try device.lockForConfiguration()
+                    device.activeFormat = maxFormat
+                    device.unlockForConfiguration()
+                } catch {}
+            }
+
             output.maxPhotoQualityPrioritization = .quality
+
             if output.isAppleProRAWSupported {
                 output.isAppleProRAWEnabled = true
             }
@@ -342,26 +362,36 @@ final class CameraManager: NSObject, ObservableObject {
     }
 
     private func makePhotoSettings(for output: AVCapturePhotoOutput) -> AVCapturePhotoSettings {
-        let settings: AVCapturePhotoSettings
+        let photoSettings: AVCapturePhotoSettings
 
         if output.isAppleProRAWEnabled,
-           let rawFormat = output.availableRawPhotoPixelFormatTypes.first {
+           let rawFormat = output.availableRawPhotoPixelFormatTypes.last {
+            // .last typically yields the highest-resolution ProRAW format
             let processedFormat: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.hevc]
-            settings = AVCapturePhotoSettings(
+            photoSettings = AVCapturePhotoSettings(
                 rawPixelFormatType: rawFormat, processedFormat: processedFormat)
         } else {
-            settings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+            photoSettings = AVCapturePhotoSettings(
+                format: [AVVideoCodecKey: AVVideoCodecType.hevc])
         }
 
-        settings.photoQualityPrioritization = .quality
+        photoSettings.photoQualityPrioritization = .quality
+
+        // Force maximum photo dimensions (48MP on Pro models)
+        let maxDims = output.supportedMaxPhotoDimensions
+        if let largest = maxDims.max(by: {
+            (Int($0.width) * Int($0.height)) < (Int($1.width) * Int($1.height))
+        }) {
+            photoSettings.maxPhotoDimensions = largest
+        }
 
         switch self.settings.flashMode {
-        case .off: settings.flashMode = .off
-        case .on: settings.flashMode = .on
-        case .auto: settings.flashMode = .auto
+        case .off: photoSettings.flashMode = .off
+        case .on: photoSettings.flashMode = .on
+        case .auto: photoSettings.flashMode = .auto
         }
 
-        return settings
+        return photoSettings
     }
 
     private func assembleTIFF(photos: [LensType: AVCapturePhoto]) {
