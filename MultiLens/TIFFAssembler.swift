@@ -2,6 +2,7 @@ import AVFoundation
 import CoreImage
 import ImageIO
 import Photos
+import UIKit
 import UniformTypeIdentifiers
 
 struct TIFFAssemblerError: LocalizedError {
@@ -25,7 +26,6 @@ final class TIFFAssembler {
             return .failure(TIFFAssemblerError(message: "Missing lens capture"))
         }
 
-        let captureUUID = UUID().uuidString
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "yyyyMMdd_HHmmss"
         let timestamp = dateFormatter.string(from: Date())
