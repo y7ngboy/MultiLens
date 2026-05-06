@@ -309,56 +309,53 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
 
-        if let uwInput = ultraWideInput {
-            let connection = AVCaptureConnection(inputPorts: uwInput.ports, output: ultraWideOutput)
+        if let ports = ultraWideInput?.ports(for: .video, sourceDeviceType: .builtInUltraWideCamera, sourceDevicePosition: .back), !ports.isEmpty {
+            let connection = AVCaptureConnection(inputPorts: ports, output: ultraWideOutput)
             if multiCamSession.canAddConnection(connection) {
                 multiCamSession.addConnection(connection)
             }
         }
-        if let wInput = wideInput {
-            let connection = AVCaptureConnection(inputPorts: wInput.ports, output: wideOutput)
+        if let ports = wideInput?.ports(for: .video, sourceDeviceType: .builtInWideAngleCamera, sourceDevicePosition: .back), !ports.isEmpty {
+            let connection = AVCaptureConnection(inputPorts: ports, output: wideOutput)
             if multiCamSession.canAddConnection(connection) {
                 multiCamSession.addConnection(connection)
             }
         }
-        if let tInput = telephotoInput {
-            let connection = AVCaptureConnection(inputPorts: tInput.ports, output: telephotoOutput)
+        if let ports = telephotoInput?.ports(for: .video, sourceDeviceType: .builtInTelephotoCamera, sourceDevicePosition: .back), !ports.isEmpty {
+            let connection = AVCaptureConnection(inputPorts: ports, output: telephotoOutput)
             if multiCamSession.canAddConnection(connection) {
                 multiCamSession.addConnection(connection)
             }
         }
 
-        // Preview layers
+        // Preview layers — must use video ports specifically
         let uwPreview = AVCaptureVideoPreviewLayer(sessionWithNoConnection: multiCamSession)
-        if let port = ultraWideInput?.ports.first {
+        if let port = ultraWideInput?.ports(for: .video, sourceDeviceType: .builtInUltraWideCamera, sourceDevicePosition: .back).first {
             let conn = AVCaptureConnection(inputPort: port, videoPreviewLayer: uwPreview)
             if multiCamSession.canAddConnection(conn) { multiCamSession.addConnection(conn) }
         }
         ultraWidePreviewLayer = uwPreview
 
         let wPreview = AVCaptureVideoPreviewLayer(sessionWithNoConnection: multiCamSession)
-        if let port = wideInput?.ports.first {
+        if let port = wideInput?.ports(for: .video, sourceDeviceType: .builtInWideAngleCamera, sourceDevicePosition: .back).first {
             let conn = AVCaptureConnection(inputPort: port, videoPreviewLayer: wPreview)
             if multiCamSession.canAddConnection(conn) { multiCamSession.addConnection(conn) }
         }
         widePreviewLayer = wPreview
 
         let tPreview = AVCaptureVideoPreviewLayer(sessionWithNoConnection: multiCamSession)
-        if let port = telephotoInput?.ports.first {
+        if let port = telephotoInput?.ports(for: .video, sourceDeviceType: .builtInTelephotoCamera, sourceDevicePosition: .back).first {
             let conn = AVCaptureConnection(inputPort: port, videoPreviewLayer: tPreview)
             if multiCamSession.canAddConnection(conn) { multiCamSession.addConnection(conn) }
         }
         telephotoPreviewLayer = tPreview
 
-        // Stabilization
-        for output in [ultraWideOutput, wideOutput, telephotoOutput] {
-            if let conn = output.connection(with: .video),
-               conn.isVideoStabilizationSupported {
-                conn.preferredVideoStabilizationMode = .auto
-            }
-        }
-
         multiCamSession.commitConfiguration()
+
+        // Notify UI that layers are ready
+        DispatchQueue.main.async { [weak self] in
+            self?.objectWillChange.send()
+        }
     }
 
     private func makePhotoSettings(for output: AVCapturePhotoOutput) -> AVCapturePhotoSettings {

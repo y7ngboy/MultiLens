@@ -544,16 +544,20 @@ struct PreviewLayerView: UIViewRepresentable {
 class PreviewUIView: UIView {
     private var currentLayer: AVCaptureVideoPreviewLayer?
 
+    override class var layerClass: AnyClass { CALayer.self }
+
     func updateLayer(_ layer: AVCaptureVideoPreviewLayer?) {
         if currentLayer !== layer {
             currentLayer?.removeFromSuperlayer()
+            currentLayer = nil
             if let layer {
                 layer.videoGravity = .resizeAspectFill
-                self.layer.addSublayer(layer)
                 layer.frame = bounds
+                self.layer.insertSublayer(layer, at: 0)
+                currentLayer = layer
             }
-            currentLayer = layer
         }
+        currentLayer?.frame = bounds
     }
 
     override func layoutSubviews() {
