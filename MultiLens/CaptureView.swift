@@ -534,35 +534,31 @@ struct ThermalWarningBanner: View {
 struct PreviewLayerView: UIViewRepresentable {
     @ObservedObject var camera: CameraManager
 
-    func makeUIView(context: Context) -> PreviewUIView { PreviewUIView() }
+    func makeUIView(context: Context) -> PreviewUIView {
+        let view = PreviewUIView()
+        view.previewLayer = camera.previewLayer
+        return view
+    }
 
     func updateUIView(_ uiView: PreviewUIView, context: Context) {
-        uiView.updateLayer(camera.activePreviewLayer)
+        uiView.setNeedsLayout()
     }
 }
 
 class PreviewUIView: UIView {
-    private var currentLayer: AVCaptureVideoPreviewLayer?
-
-    override class var layerClass: AnyClass { CALayer.self }
-
-    func updateLayer(_ layer: AVCaptureVideoPreviewLayer?) {
-        if currentLayer !== layer {
-            currentLayer?.removeFromSuperlayer()
-            currentLayer = nil
-            if let layer {
-                layer.videoGravity = .resizeAspectFill
-                layer.frame = bounds
-                self.layer.insertSublayer(layer, at: 0)
-                currentLayer = layer
+    var previewLayer: AVCaptureVideoPreviewLayer? {
+        didSet {
+            oldValue?.removeFromSuperlayer()
+            if let previewLayer {
+                previewLayer.frame = bounds
+                layer.insertSublayer(previewLayer, at: 0)
             }
         }
-        currentLayer?.frame = bounds
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        currentLayer?.frame = bounds
+        previewLayer?.frame = bounds
     }
 }
 

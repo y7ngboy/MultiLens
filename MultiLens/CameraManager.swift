@@ -22,7 +22,9 @@ enum CaptureState: Equatable {
 final class CameraManager: NSObject, ObservableObject {
     @Published var captureState: CaptureState = .idle
     @Published var encodingProgress: Double = 0
-    @Published var previewLens: LensType = .wide
+    @Published var previewLens: LensType = .wide {
+        didSet { switchPreviewConnection() }
+    }
     @Published var lastFileSize: String?
     @Published var showToast = false
     @Published var thermalWarning = false
@@ -30,8 +32,9 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var focusPoint: CGPoint?
     @Published var exposureValue: Float = 0
     @Published var isExposureLocked = false
+    @Published var sessionReady = false
 
-    let multiCamSession = AVCaptureMultiCamSession()
+    private let multiCamSession = AVCaptureMultiCamSession()
 
     private var ultraWideInput: AVCaptureDeviceInput?
     private var wideInput: AVCaptureDeviceInput?
@@ -41,23 +44,14 @@ final class CameraManager: NSObject, ObservableObject {
     private let wideOutput = AVCapturePhotoOutput()
     private let telephotoOutput = AVCapturePhotoOutput()
 
-    private var ultraWidePreviewLayer: AVCaptureVideoPreviewLayer?
-    private var widePreviewLayer: AVCaptureVideoPreviewLayer?
-    private var telephotoPreviewLayer: AVCaptureVideoPreviewLayer?
+    private(set) var previewLayer: AVCaptureVideoPreviewLayer!
+    private var previewConnection: AVCaptureConnection?
 
     private let coordinator = CaptureCoordinator()
     private let sessionQueue = DispatchQueue(label: "com.multilens.session")
     private var countdownTimer: Timer?
 
     var settings = CaptureSettings()
-
-    var activePreviewLayer: AVCaptureVideoPreviewLayer? {
-        switch previewLens {
-        case .ultraWide: return ultraWidePreviewLayer
-        case .wide: return widePreviewLayer
-        case .telephoto: return telephotoPreviewLayer
-        }
-    }
 
     var activeDevice: AVCaptureDevice? {
         switch previewLens {
@@ -71,6 +65,13 @@ final class CameraManager: NSObject, ObservableObject {
         AVCaptureMultiCamSession.isMultiCamSupported
     }
 
+    override init() {
+        previewLayer = nil
+        super.init()
+        previewLayer = AVCaptureVideoPreviewLayer(sessionWithNoConnection: multiCamSession)
+        previewLayer.videoGravity = .resizeAspectFill
+    }
+
     func configure() {
         sessionQueue.async { [weak self] in
             self?.setupSession()
@@ -80,7 +81,11 @@ final class CameraManager: NSObject, ObservableObject {
 
     func startSession() {
         sessionQueue.async { [weak self] in
-            self?.multiCamSession.startRunning()
+            guard let self else { return }
+            self.multiCamSession.startRunning()
+            DispatchQueue.main.async {
+                self.sessionReady = true
+            }
         }
     }
 
@@ -281,13 +286,31 @@ final class CameraManager: NSObject, ObservableObject {
 
         let devices = [ultraWideDev, wideDev, telephoneDev]
         let outputs = [ultraWideOutput, wideOutput, telephotoOutput]
+        let inputs = [ultraWideInput!, wideInput!, telephotoInput!]
+        let deviceTypes: [AVCaptureDevice.DeviceType] = [
+            .builtInUltraWideCamera, .builtInWideAngleCamera, .builtInTelephotoCamera
+        ]
 
-        for (device, output) in zip(devices, outputs) {
+        for i in 0..<3 {
+            let output = outputs[i]
+            let input = inputs[i]
+            let device = devices[i]
+            let deviceType = deviceTypes[i]
+
             if multiCamSession.canAddOutput(output) {
                 multiCamSession.addOutput(output)
             }
 
-            // Force highest resolution format (48MP where available)
+            // Connect input video port to photo output
+            let videoPorts = input.ports(for: .video, sourceDeviceType: deviceType, sourceDevicePosition: .back)
+            if !videoPorts.isEmpty {
+                let conn = AVCaptureConnection(inputPorts: videoPorts, output: output)
+                if multiCamSession.canAddConnection(conn) {
+                    multiCamSession.addConnection(conn)
+                }
+            }
+
+            // Force highest resolution format
             if let maxFormat = device.formats
                 .filter({ $0.isHighestPhotoQualitySupported })
                 .max(by: {
@@ -303,58 +326,56 @@ final class CameraManager: NSObject, ObservableObject {
             }
 
             output.maxPhotoQualityPrioritization = .quality
-
             if output.isAppleProRAWSupported {
                 output.isAppleProRAWEnabled = true
             }
         }
 
-        if let ports = ultraWideInput?.ports(for: .video, sourceDeviceType: .builtInUltraWideCamera, sourceDevicePosition: .back), !ports.isEmpty {
-            let connection = AVCaptureConnection(inputPorts: ports, output: ultraWideOutput)
-            if multiCamSession.canAddConnection(connection) {
-                multiCamSession.addConnection(connection)
-            }
-        }
-        if let ports = wideInput?.ports(for: .video, sourceDeviceType: .builtInWideAngleCamera, sourceDevicePosition: .back), !ports.isEmpty {
-            let connection = AVCaptureConnection(inputPorts: ports, output: wideOutput)
-            if multiCamSession.canAddConnection(connection) {
-                multiCamSession.addConnection(connection)
-            }
-        }
-        if let ports = telephotoInput?.ports(for: .video, sourceDeviceType: .builtInTelephotoCamera, sourceDevicePosition: .back), !ports.isEmpty {
-            let connection = AVCaptureConnection(inputPorts: ports, output: telephotoOutput)
-            if multiCamSession.canAddConnection(connection) {
-                multiCamSession.addConnection(connection)
-            }
-        }
-
-        // Preview layers — must use video ports specifically
-        let uwPreview = AVCaptureVideoPreviewLayer(sessionWithNoConnection: multiCamSession)
-        if let port = ultraWideInput?.ports(for: .video, sourceDeviceType: .builtInUltraWideCamera, sourceDevicePosition: .back).first {
-            let conn = AVCaptureConnection(inputPort: port, videoPreviewLayer: uwPreview)
-            if multiCamSession.canAddConnection(conn) { multiCamSession.addConnection(conn) }
-        }
-        ultraWidePreviewLayer = uwPreview
-
-        let wPreview = AVCaptureVideoPreviewLayer(sessionWithNoConnection: multiCamSession)
-        if let port = wideInput?.ports(for: .video, sourceDeviceType: .builtInWideAngleCamera, sourceDevicePosition: .back).first {
-            let conn = AVCaptureConnection(inputPort: port, videoPreviewLayer: wPreview)
-            if multiCamSession.canAddConnection(conn) { multiCamSession.addConnection(conn) }
-        }
-        widePreviewLayer = wPreview
-
-        let tPreview = AVCaptureVideoPreviewLayer(sessionWithNoConnection: multiCamSession)
-        if let port = telephotoInput?.ports(for: .video, sourceDeviceType: .builtInTelephotoCamera, sourceDevicePosition: .back).first {
-            let conn = AVCaptureConnection(inputPort: port, videoPreviewLayer: tPreview)
-            if multiCamSession.canAddConnection(conn) { multiCamSession.addConnection(conn) }
-        }
-        telephotoPreviewLayer = tPreview
+        // Connect wide camera to preview layer by default
+        connectPreview(for: .wide)
 
         multiCamSession.commitConfiguration()
+    }
 
-        // Notify UI that layers are ready
-        DispatchQueue.main.async { [weak self] in
-            self?.objectWillChange.send()
+    private func connectPreview(for lens: LensType) {
+        // Remove existing preview connection
+        if let existing = previewConnection {
+            multiCamSession.removeConnection(existing)
+            previewConnection = nil
+        }
+
+        let input: AVCaptureDeviceInput?
+        let deviceType: AVCaptureDevice.DeviceType
+
+        switch lens {
+        case .ultraWide:
+            input = ultraWideInput
+            deviceType = .builtInUltraWideCamera
+        case .wide:
+            input = wideInput
+            deviceType = .builtInWideAngleCamera
+        case .telephoto:
+            input = telephotoInput
+            deviceType = .builtInTelephotoCamera
+        }
+
+        guard let input,
+              let port = input.ports(for: .video, sourceDeviceType: deviceType, sourceDevicePosition: .back).first
+        else { return }
+
+        let conn = AVCaptureConnection(inputPort: port, videoPreviewLayer: previewLayer)
+        if multiCamSession.canAddConnection(conn) {
+            multiCamSession.addConnection(conn)
+            previewConnection = conn
+        }
+    }
+
+    private func switchPreviewConnection() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.multiCamSession.beginConfiguration()
+            self.connectPreview(for: self.previewLens)
+            self.multiCamSession.commitConfiguration()
         }
     }
 
