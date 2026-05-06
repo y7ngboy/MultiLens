@@ -366,7 +366,6 @@ final class CameraManager: NSObject, ObservableObject {
 
         if output.isAppleProRAWEnabled,
            let rawFormat = output.availableRawPhotoPixelFormatTypes.last {
-            // .last typically yields the highest-resolution ProRAW format
             let processedFormat: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.hevc]
             photoSettings = AVCapturePhotoSettings(
                 rawPixelFormatType: rawFormat, processedFormat: processedFormat)
@@ -376,14 +375,6 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         photoSettings.photoQualityPrioritization = .quality
-
-        // Force maximum photo dimensions (48MP on Pro models)
-        let maxDims = output.supportedMaxPhotoDimensions
-        if let largest = maxDims.max(by: {
-            (Int($0.width) * Int($0.height)) < (Int($1.width) * Int($1.height))
-        }) {
-            photoSettings.maxPhotoDimensions = largest
-        }
 
         switch self.settings.flashMode {
         case .off: photoSettings.flashMode = .off
