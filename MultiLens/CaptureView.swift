@@ -55,13 +55,17 @@ struct MainCameraView: View {
         GeometryReader { geo in
             ZStack {
                 // Preview
-                CameraPreviewView(previewLayer: camera.previewLayer)
-                    .ignoresSafeArea()
-                    .scaleEffect(x: camera.settings.anamorphicDesqueeze.factor, y: 1.0)
-                    .gesture(pinchGesture)
-                    .gesture(tapGesture(in: geo.size))
-                    .gesture(doubleTapGesture)
-                    .gesture(swipeGesture)
+                if let layer = camera.previewLayer {
+                    CameraPreviewView(previewLayer: layer)
+                        .ignoresSafeArea()
+                        .scaleEffect(x: camera.settings.anamorphicDesqueeze.factor, y: 1.0)
+                        .gesture(pinchGesture)
+                        .gesture(tapGesture(in: geo.size))
+                        .gesture(doubleTapGesture)
+                        .gesture(swipeGesture)
+                } else {
+                    Color.black.ignoresSafeArea()
+                }
 
                 // Frame guide overlay
                 if let ratio = camera.settings.frameGuide.aspectRatio {

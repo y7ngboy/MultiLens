@@ -58,7 +58,7 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isoRange: (Float, Float) = (32, 3200)
     @Published var currentFPS: Double = 24
 
-    let session = AVCaptureMultiCamSession()
+    private(set) var session: AVCaptureMultiCamSession!
     private(set) var previewLayer: AVCaptureVideoPreviewLayer!
 
     private var ultraWideInput: AVCaptureDeviceInput?
@@ -99,16 +99,27 @@ final class CameraManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        previewLayer = AVCaptureVideoPreviewLayer(session: session)
-        previewLayer.videoGravity = .resizeAspectFill
     }
 
     func configure() {
+        guard AVCaptureMultiCamSession.isMultiCamSupported else {
+            DispatchQueue.main.async { self.captureState = .error("MultiCam not supported") }
+            return
+        }
+
         sessionQueue.async { [weak self] in
-            self?.setupSession()
-            self?.session.startRunning()
+            guard let self else { return }
+            self.session = AVCaptureMultiCamSession()
+
+            DispatchQueue.main.sync {
+                self.previewLayer = AVCaptureVideoPreviewLayer(session: self.session)
+                self.previewLayer.videoGravity = .resizeAspectFill
+            }
+
+            self.setupSession()
+            self.session.startRunning()
             DispatchQueue.main.async {
-                self?.updateDeviceInfo()
+                self.updateDeviceInfo()
             }
         }
         observeThermalState()
