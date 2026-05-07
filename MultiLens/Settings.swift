@@ -1,40 +1,26 @@
 import SwiftUI
 import AVFoundation
 
-// MARK: - Capture Settings
-
 final class CaptureSettings: ObservableObject {
-    @AppStorage("flashMode") var flashMode: FlashMode = .off
-    @AppStorage("gridEnabled") var gridEnabled: Bool = false
-    @AppStorage("hapticEnabled") var hapticEnabled: Bool = true
-    @AppStorage("timerSeconds") var timerSeconds: Int = 0
-
-    // Video settings
-    @AppStorage("videoCodec") var videoCodec: VideoCodec = .proRes422HQ
-    @AppStorage("videoResolution") var videoResolution: VideoResolution = .uhd4K
-    @AppStorage("frameRate") var frameRate: FrameRate = .fps24
-    @AppStorage("colorSpace") var colorSpace: ColorSpace = .rec709
-    @AppStorage("stabilization") var stabilization: StabilizationMode = .off
-
-    // Monitoring
-    @AppStorage("focusPeaking") var focusPeaking: Bool = false
-    @AppStorage("zebras") var zebras: Bool = false
-    @AppStorage("zebraThreshold") var zebraThreshold: Int = 95
-    @AppStorage("histogram") var histogram: Bool = false
-    @AppStorage("falseColor") var falseColor: Bool = false
-    @AppStorage("audioMeters") var audioMeters: Bool = true
-
-    // Anamorphic
-    @AppStorage("anamorphicDesqueeze") var anamorphicDesqueeze: AnamorphicMode = .none
-
-    // Frame guides
-    @AppStorage("frameGuide") var frameGuide: FrameGuide = .none
-
-    // Shutter mode
-    @AppStorage("shutterMode") var shutterMode: ShutterMode = .angle
+    @Published var flashMode: FlashMode = .off
+    @Published var gridEnabled: Bool = false
+    @Published var hapticEnabled: Bool = true
+    @Published var timerSeconds: Int = 0
+    @Published var videoCodec: VideoCodec = .proRes422HQ
+    @Published var videoResolution: VideoResolution = .uhd4K
+    @Published var frameRate: FrameRate = .fps24
+    @Published var colorSpace: ColorSpace = .rec709
+    @Published var stabilization: StabilizationMode = .off
+    @Published var focusPeaking: Bool = false
+    @Published var zebras: Bool = false
+    @Published var zebraThreshold: Int = 95
+    @Published var histogram: Bool = false
+    @Published var falseColor: Bool = false
+    @Published var audioMeters: Bool = true
+    @Published var anamorphicDesqueeze: AnamorphicMode = .none
+    @Published var frameGuide: FrameGuide = .none
+    @Published var shutterMode: ShutterMode = .angle
 }
-
-// MARK: - Enums
 
 enum FlashMode: String, CaseIterable {
     case off = "Off"
@@ -65,14 +51,6 @@ enum VideoResolution: String, CaseIterable {
     case hd720 = "720p"
     case hd1080 = "1080p"
     case uhd4K = "4K"
-
-    var dimensions: (Int, Int) {
-        switch self {
-        case .hd720: return (1280, 720)
-        case .hd1080: return (1920, 1080)
-        case .uhd4K: return (3840, 2160)
-        }
-    }
 }
 
 enum FrameRate: String, CaseIterable {
@@ -135,14 +113,6 @@ enum StabilizationMode: String, CaseIterable {
     case off = "Off"
     case standard = "Standard"
     case cinematic = "Cinematic"
-
-    var avMode: AVCaptureVideoStabilizationMode {
-        switch self {
-        case .off: return .off
-        case .standard: return .standard
-        case .cinematic: return .cinematic
-        }
-    }
 }
 
 enum AnamorphicMode: String, CaseIterable {
