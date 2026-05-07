@@ -26,11 +26,9 @@ struct CaptureView: View {
     }
 
     private func checkPermissions() {
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        if status == .authorized {
+        if AVCaptureDevice.authorizationStatus(for: .video) == .authorized {
             permissionGranted = true
             camera.configure()
-            camera.startSession()
         }
     }
 
@@ -38,41 +36,33 @@ struct CaptureView: View {
         AVCaptureDevice.requestAccess(for: .video) { granted in
             DispatchQueue.main.async {
                 permissionGranted = granted
-                if granted {
-                    camera.configure()
-                    camera.startSession()
-                }
+                if granted { camera.configure() }
             }
         }
     }
 }
 
-// MARK: - Main Viewfinder
+// MARK: - Viewfinder
 
 struct ViewfinderView: View {
     @ObservedObject var camera: CameraManager
     @Binding var showSettings: Bool
     @State private var lastScale: CGFloat = 1.0
-    @State private var dragOffset: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
             ZStack {
-                // Camera preview
-                PreviewLayerView(camera: camera)
+                CameraPreviewView(previewLayer: camera.previewLayer)
                     .ignoresSafeArea()
                     .gesture(pinchGesture)
                     .gesture(tapGesture(in: geo.size))
-                    .gesture(longPressGesture(in: geo.size))
+                    .gesture(doubleTapGesture)
                     .gesture(swipeGesture)
-                    .gesture(verticalDragGesture)
 
-                // Grid overlay
                 if camera.settings.gridEnabled {
-                    GridOverlay()
+                    GridOverlay().allowsHitTesting(false)
                 }
 
-                // Focus indicator
                 if let point = camera.focusPoint {
                     FocusIndicator(point: point, locked: camera.isExposureLocked)
                 }
@@ -83,48 +73,46 @@ struct ViewfinderView: View {
                     Spacer()
                 }
 
-                // Bottom controls
+                // Bottom
                 VStack(spacing: 0) {
                     Spacer()
 
                     if camera.thermalWarning {
-                        ThermalWarningBanner()
-                            .padding(.bottom, 8)
+                        ThermalBanner().padding(.bottom, 8)
                     }
 
-                    if case .encoding = camera.captureState {
-                        EncodingProgressView(progress: camera.encodingProgress)
-                            .padding(.horizontal, 32)
+                    if case .countdown(let s) = camera.captureState {
+                        Text("\(s)")
+                            .font(.system(size: 72, weight: .thin, design: .rounded))
+                            .foregroundColor(.white)
                             .padding(.bottom, 16)
                     }
 
-                    if case .countdown(let sec) = camera.captureState {
-                        CountdownView(seconds: sec)
-                            .padding(.bottom, 16)
+                    if camera.isRecording {
+                        RecordingIndicator(duration: camera.recordingDuration)
+                            .padding(.bottom, 12)
                     }
 
-                    BottomControlsView(camera: camera)
-                        .padding(.bottom, 20)
+                    BottomBar(camera: camera)
+                        .padding(.bottom, 24)
                 }
 
                 // Toast
-                if camera.showToast, let size = camera.lastFileSize {
+                if camera.showToast {
                     VStack {
-                        ToastView(fileSize: size)
+                        ToastView(count: camera.lastSaveCount, recording: camera.captureState == .idle && camera.lastSaveCount == 0)
+                            .onAppear {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                                    withAnimation { camera.showToast = false }
+                                }
+                            }
                         Spacer()
-                    }
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                    .onAppear {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                            withAnimation { camera.showToast = false }
-                        }
-                    }
+                    }.padding(.top, 60)
                 }
 
-                // Error
                 if case .error(let msg) = camera.captureState {
                     VStack {
-                        ErrorBanner(message: msg)
+                        ErrorBanner(message: msg).padding(.top, 60)
                         Spacer()
                     }
                 }
@@ -132,63 +120,63 @@ struct ViewfinderView: View {
         }
     }
 
-    // MARK: Gestures
-
     private var pinchGesture: some Gesture {
         MagnificationGesture()
-            .onChanged { value in
-                let delta = value / lastScale
-                lastScale = value
-                let newZoom = camera.zoomFactor * delta
-                camera.setZoom(newZoom)
+            .onChanged { val in
+                let delta = val / lastScale
+                lastScale = val
+                camera.setZoom(camera.zoomFactor * delta)
             }
             .onEnded { _ in lastScale = 1.0 }
     }
 
     private func tapGesture(in size: CGSize) -> some Gesture {
         SpatialTapGesture()
-            .onEnded { value in
-                camera.focus(at: value.location, in: size)
-            }
+            .onEnded { val in camera.focus(at: val.location, in: size) }
     }
 
-    private func longPressGesture(in size: CGSize) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.8)
-            .sequenced(before: SpatialTapGesture())
-            .onEnded { value in
-                switch value {
-                case .second(true, let tap):
-                    if let tap {
-                        camera.lockExposure(at: tap.location, in: size)
-                    }
-                default: break
-                }
-            }
+    private var doubleTapGesture: some Gesture {
+        TapGesture(count: 2)
+            .onEnded { camera.switchToNextLens() }
     }
 
     private var swipeGesture: some Gesture {
-        DragGesture(minimumDistance: 50)
-            .onEnded { value in
-                if abs(value.translation.width) > abs(value.translation.height) {
+        DragGesture(minimumDistance: 60)
+            .onEnded { val in
+                if abs(val.translation.width) > abs(val.translation.height) {
                     camera.switchToNextLens()
+                } else {
+                    let delta = Float(-val.translation.height / 600)
+                    camera.adjustExposure(by: delta)
                 }
             }
-    }
-
-    private var verticalDragGesture: some Gesture {
-        DragGesture(minimumDistance: 20)
-            .onChanged { value in
-                if abs(value.translation.height) > abs(value.translation.width) {
-                    let delta = Float(-value.translation.height / 500)
-                    camera.adjustExposure(by: delta - Float(dragOffset / 500))
-                    dragOffset = value.translation.height
-                }
-            }
-            .onEnded { _ in dragOffset = 0 }
     }
 }
 
-// MARK: - Top Bar (Final Cut Camera style)
+// MARK: - Camera Preview UIKit Bridge
+
+struct CameraPreviewView: UIViewRepresentable {
+    let previewLayer: AVCaptureVideoPreviewLayer
+
+    func makeUIView(context: Context) -> UIView {
+        let view = PreviewHostView()
+        view.layer.addSublayer(previewLayer)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        previewLayer.frame = uiView.bounds
+    }
+
+    class PreviewHostView: UIView {
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            layer.sublayers?.forEach { $0.frame = bounds }
+        }
+    }
+}
+
+// MARK: - Top Bar
 
 struct TopBarView: View {
     @ObservedObject var camera: CameraManager
@@ -196,7 +184,6 @@ struct TopBarView: View {
 
     var body: some View {
         HStack {
-            // Flash
             Button {
                 let modes = FlashMode.allCases
                 let idx = modes.firstIndex(of: camera.settings.flashMode) ?? 0
@@ -209,37 +196,34 @@ struct TopBarView: View {
 
             Spacer()
 
-            // Format badge
-            Text(camera.settings.format.rawValue)
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundColor(.white.opacity(0.8))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(Color.white.opacity(0.15)))
+            HStack(spacing: 6) {
+                Text("ProRAW")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.yellow)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.yellow.opacity(0.15)))
 
-            Text("ProRAW")
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                .foregroundColor(.yellow.opacity(0.9))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(Capsule().fill(Color.yellow.opacity(0.1)))
+                Text("48MP")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.7))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.white.opacity(0.1)))
+            }
 
             Spacer()
 
-            // Settings gear
             Button { showSettings = true } label: {
                 Image(systemName: "gearshape.fill")
-                    .font(.system(size: 16, weight: .medium))
+                    .font(.system(size: 16))
                     .foregroundColor(.white)
             }
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
         .padding(.bottom, 8)
-        .background(
-            LinearGradient(colors: [.black.opacity(0.6), .clear],
-                           startPoint: .top, endPoint: .bottom)
-        )
+        .background(LinearGradient(colors: [.black.opacity(0.7), .clear], startPoint: .top, endPoint: .bottom))
     }
 
     private var flashIcon: String {
@@ -251,254 +235,184 @@ struct TopBarView: View {
     }
 }
 
-// MARK: - Bottom Controls
+// MARK: - Bottom Bar
 
-struct BottomControlsView: View {
+struct BottomBar: View {
     @ObservedObject var camera: CameraManager
 
     var body: some View {
         VStack(spacing: 16) {
             // Lens selector
-            LensSelectorView(selected: $camera.previewLens, zoom: camera.zoomFactor)
+            HStack(spacing: 4) {
+                ForEach(LensType.allCases, id: \.self) { lens in
+                    Button {
+                        camera.previewLens = lens
+                        camera.switchPreview(to: lens)
+                    } label: {
+                        Text(lens.rawValue)
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .foregroundColor(camera.previewLens == lens ? .yellow : .white.opacity(0.5))
+                            .frame(width: 48, height: 32)
+                            .background(
+                                Capsule().fill(camera.previewLens == lens
+                                    ? Color.yellow.opacity(0.15)
+                                    : Color.white.opacity(0.06))
+                            )
+                    }
+                }
+            }
 
-            // Shutter row
-            HStack(spacing: 50) {
-                // Last capture thumbnail placeholder
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.white.opacity(0.1))
-                    .frame(width: 44, height: 44)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.white.opacity(0.3), lineWidth: 1)
-                    )
-
-                // Shutter
-                ShutterButton(state: camera.captureState) {
-                    camera.captureAll()
+            // Capture controls
+            HStack(spacing: 40) {
+                // Record button (ProRes)
+                Button { camera.toggleRecording() } label: {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.red, lineWidth: 2.5)
+                            .frame(width: 44, height: 44)
+                        if camera.isRecording {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.red)
+                                .frame(width: 18, height: 18)
+                        } else {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 18, height: 18)
+                        }
+                    }
                 }
 
+                // Photo shutter (3x capture)
+                Button { camera.captureAll() } label: {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white, lineWidth: 3.5)
+                            .frame(width: 72, height: 72)
+                        Circle()
+                            .fill(captureActive ? Color.white : Color.white.opacity(0.3))
+                            .frame(width: 60, height: 60)
+                    }
+                }
+                .disabled(!captureActive)
+
                 // Exposure indicator
-                ExposureIndicator(value: camera.exposureValue, locked: camera.isExposureLocked)
-                    .frame(width: 44, height: 44)
+                VStack(spacing: 2) {
+                    Image(systemName: camera.isExposureLocked ? "sun.max.fill" : "sun.max")
+                        .font(.system(size: 14))
+                        .foregroundColor(camera.isExposureLocked ? .yellow : .white.opacity(0.5))
+                    if abs(camera.exposureValue) > 0.1 {
+                        Text(String(format: "%+.1f", camera.exposureValue))
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                }
+                .frame(width: 44, height: 44)
             }
         }
         .padding(.horizontal, 20)
-        .padding(.bottom, 16)
-        .background(
-            LinearGradient(colors: [.clear, .black.opacity(0.5)],
-                           startPoint: .top, endPoint: .bottom)
-        )
+    }
+
+    private var captureActive: Bool {
+        camera.captureState == .idle
     }
 }
 
-// MARK: - Lens Selector
+// MARK: - Supporting Views
 
-struct LensSelectorView: View {
-    @Binding var selected: LensType
-    var zoom: CGFloat
+struct RecordingIndicator: View {
+    let duration: TimeInterval
+    @State private var blinking = true
 
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(LensType.allCases, id: \.self) { lens in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { selected = lens }
-                } label: {
-                    Text(lens.rawValue)
-                        .font(.system(size: 13, weight: .bold, design: .rounded))
-                        .foregroundColor(selected == lens ? .yellow : .white.opacity(0.6))
-                        .frame(width: 48, height: 32)
-                        .background(
-                            Capsule()
-                                .fill(selected == lens
-                                      ? Color.yellow.opacity(0.15)
-                                      : Color.white.opacity(0.08))
-                        )
-                }
-            }
+        HStack(spacing: 8) {
+            Circle()
+                .fill(Color.red)
+                .frame(width: 8, height: 8)
+                .opacity(blinking ? 1 : 0.3)
+                .animation(.easeInOut(duration: 0.6).repeatForever(), value: blinking)
+                .onAppear { blinking.toggle() }
+
+            Text(formatTime(duration))
+                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                .foregroundColor(.white)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(Color.red.opacity(0.3)))
+    }
+
+    private func formatTime(_ t: TimeInterval) -> String {
+        let m = Int(t) / 60
+        let s = Int(t) % 60
+        return String(format: "%02d:%02d", m, s)
     }
 }
-
-// MARK: - Shutter Button
-
-struct ShutterButton: View {
-    let state: CaptureState
-    let action: () -> Void
-
-    private var isActive: Bool {
-        if case .idle = state { return true }
-        return false
-    }
-
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                Circle()
-                    .stroke(Color.white.opacity(0.9), lineWidth: 3)
-                    .frame(width: 72, height: 72)
-
-                Circle()
-                    .fill(isActive ? Color.white : Color.white.opacity(0.3))
-                    .frame(width: 62, height: 62)
-
-                if case .capturing = state {
-                    Circle()
-                        .fill(Color.red)
-                        .frame(width: 62, height: 62)
-                }
-            }
-        }
-        .disabled(!isActive)
-        .scaleEffect(isActive ? 1.0 : 0.95)
-        .animation(.easeInOut(duration: 0.1), value: state)
-    }
-}
-
-// MARK: - Focus Indicator
 
 struct FocusIndicator: View {
     let point: CGPoint
     let locked: Bool
-    @State private var scale: CGFloat = 1.5
-    @State private var opacity: Double = 1.0
+    @State private var scale: CGFloat = 1.4
 
     var body: some View {
         RoundedRectangle(cornerRadius: 2)
             .stroke(locked ? Color.yellow : Color.white, lineWidth: 1.5)
             .frame(width: 70, height: 70)
-            .overlay(
-                locked ? Text("AE/AF LOCK")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundColor(.yellow)
-                    .offset(y: -44)
-                : nil
-            )
-            .scaleEffect(scale)
-            .opacity(opacity)
-            .position(point)
-            .onAppear {
-                withAnimation(.easeOut(duration: 0.3)) { scale = 1.0 }
-                if !locked {
-                    withAnimation(.easeOut(duration: 1.5).delay(0.5)) { opacity = 0 }
+            .overlay(alignment: .top) {
+                if locked {
+                    Text("AE/AF LOCK")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundColor(.yellow)
+                        .offset(y: -16)
                 }
             }
-    }
-}
-
-// MARK: - Exposure Indicator
-
-struct ExposureIndicator: View {
-    let value: Float
-    let locked: Bool
-
-    var body: some View {
-        VStack(spacing: 2) {
-            Image(systemName: locked ? "sun.max.fill" : "sun.max")
-                .font(.system(size: 14))
-                .foregroundColor(locked ? .yellow : .white.opacity(0.6))
-
-            if abs(value) > 0.1 {
-                Text(String(format: "%+.1f", value))
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.7))
+            .scaleEffect(scale)
+            .position(point)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.2)) { scale = 1.0 }
             }
-        }
     }
 }
-
-// MARK: - Grid Overlay
 
 struct GridOverlay: View {
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
             let h = geo.size.height
-
-            Path { path in
-                path.move(to: CGPoint(x: w / 3, y: 0))
-                path.addLine(to: CGPoint(x: w / 3, y: h))
-                path.move(to: CGPoint(x: 2 * w / 3, y: 0))
-                path.addLine(to: CGPoint(x: 2 * w / 3, y: h))
-                path.move(to: CGPoint(x: 0, y: h / 3))
-                path.addLine(to: CGPoint(x: w, y: h / 3))
-                path.move(to: CGPoint(x: 0, y: 2 * h / 3))
-                path.addLine(to: CGPoint(x: w, y: 2 * h / 3))
+            Path { p in
+                p.move(to: CGPoint(x: w/3, y: 0)); p.addLine(to: CGPoint(x: w/3, y: h))
+                p.move(to: CGPoint(x: 2*w/3, y: 0)); p.addLine(to: CGPoint(x: 2*w/3, y: h))
+                p.move(to: CGPoint(x: 0, y: h/3)); p.addLine(to: CGPoint(x: w, y: h/3))
+                p.move(to: CGPoint(x: 0, y: 2*h/3)); p.addLine(to: CGPoint(x: w, y: 2*h/3))
             }
-            .stroke(Color.white.opacity(0.25), lineWidth: 0.5)
-        }
-        .allowsHitTesting(false)
-    }
-}
-
-// MARK: - Encoding Progress
-
-struct EncodingProgressView: View {
-    let progress: Double
-
-    var body: some View {
-        VStack(spacing: 8) {
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.white.opacity(0.15))
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.yellow)
-                        .frame(width: geo.size.width * CGFloat(progress))
-                }
-            }
-            .frame(height: 4)
-
-            Text("Encoding TIFF — \(Int(progress * 100))%")
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundColor(.white.opacity(0.7))
+            .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
         }
     }
 }
-
-// MARK: - Countdown
-
-struct CountdownView: View {
-    let seconds: Int
-
-    var body: some View {
-        Text("\(seconds)")
-            .font(.system(size: 72, weight: .thin, design: .rounded))
-            .foregroundColor(.white)
-            .shadow(color: .black.opacity(0.5), radius: 10)
-    }
-}
-
-// MARK: - Toast
 
 struct ToastView: View {
-    let fileSize: String
+    let count: Int
+    let recording: Bool
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundColor(.green)
-                .font(.system(size: 14))
-            Text("Saved")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white)
-            Text(fileSize)
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundColor(.green).font(.system(size: 14))
+            if recording {
+                Text("Video saved")
+            } else {
+                Text("\(count) photos saved (ProRAW DNG)")
+            }
         }
+        .font(.system(size: 13, weight: .medium))
+        .foregroundColor(.white)
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(
-            Capsule().fill(Color(white: 0.15).opacity(0.95))
-        )
-        .padding(.top, 60)
+        .background(Capsule().fill(Color(white: 0.12)))
     }
 }
 
-// MARK: - Error Banner
-
 struct ErrorBanner: View {
     let message: String
-
     var body: some View {
         Text(message)
             .font(.system(size: 12, weight: .medium))
@@ -507,99 +421,40 @@ struct ErrorBanner: View {
             .padding(.vertical, 10)
             .background(Capsule().fill(Color.red.opacity(0.85)))
             .padding(.horizontal, 20)
-            .padding(.top, 60)
     }
 }
 
-// MARK: - Thermal Warning
-
-struct ThermalWarningBanner: View {
+struct ThermalBanner: View {
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: "thermometer.sun.fill")
-                .font(.system(size: 12))
-                .foregroundColor(.orange)
-            Text("Device is warm")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.white.opacity(0.8))
+            Image(systemName: "thermometer.sun.fill").font(.system(size: 12)).foregroundColor(.orange)
+            Text("Device warm").font(.system(size: 11, weight: .medium)).foregroundColor(.white.opacity(0.8))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12).padding(.vertical, 6)
         .background(Capsule().fill(Color.orange.opacity(0.2)))
     }
 }
 
-// MARK: - Preview Layer Bridge
-
-struct PreviewLayerView: UIViewRepresentable {
-    @ObservedObject var camera: CameraManager
-
-    func makeUIView(context: Context) -> PreviewUIView {
-        let view = PreviewUIView()
-        view.previewLayer = camera.previewLayer
-        return view
-    }
-
-    func updateUIView(_ uiView: PreviewUIView, context: Context) {
-        uiView.setNeedsLayout()
-    }
-}
-
-class PreviewUIView: UIView {
-    var previewLayer: AVCaptureVideoPreviewLayer? {
-        didSet {
-            oldValue?.removeFromSuperlayer()
-            if let previewLayer {
-                previewLayer.frame = bounds
-                layer.insertSublayer(previewLayer, at: 0)
-            }
-        }
-    }
-
-    override func layoutSubviews() {
-        super.layoutSubviews()
-        previewLayer?.frame = bounds
-    }
-}
-
-// MARK: - Unsupported / Permission
-
 struct UnsupportedView: View {
     var body: some View {
         VStack(spacing: 16) {
-            Image(systemName: "camera.badge.ellipsis")
-                .font(.system(size: 48))
-                .foregroundColor(.gray)
-            Text("Multi-Camera Not Supported")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundColor(.white)
-            Text("Requires iPhone 14 Pro or later.")
-                .font(.system(size: 14))
-                .foregroundColor(.gray)
+            Image(systemName: "camera.badge.ellipsis").font(.system(size: 48)).foregroundColor(.gray)
+            Text("Multi-Camera Not Supported").font(.system(size: 18, weight: .semibold)).foregroundColor(.white)
+            Text("Requires iPhone 14 Pro or later.").font(.system(size: 14)).foregroundColor(.gray)
         }
     }
 }
 
 struct PermissionView: View {
     let onRequest: () -> Void
-
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: "camera.fill")
-                .font(.system(size: 48))
-                .foregroundColor(.white.opacity(0.6))
-            Text("Camera Access")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundColor(.white)
-            Text("MultiLens needs access to all rear cameras.")
-                .font(.system(size: 14))
-                .foregroundColor(.gray)
-                .multilineTextAlignment(.center)
+            Image(systemName: "camera.fill").font(.system(size: 48)).foregroundColor(.white.opacity(0.6))
+            Text("Camera Access").font(.system(size: 20, weight: .semibold)).foregroundColor(.white)
             Button("Allow Camera", action: onRequest)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(.black)
-                .padding(.horizontal, 24)
-                .padding(.vertical, 12)
+                .padding(.horizontal, 24).padding(.vertical, 12)
                 .background(Capsule().fill(Color.white))
         }
     }

@@ -7,23 +7,9 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Output") {
-                    Picker("Format", selection: $settings.format) {
-                        ForEach(OutputFormat.allCases, id: \.self) { format in
-                            Text(format.rawValue).tag(format)
-                        }
-                    }
-
-                    Toggle("LZW Compression", isOn: $settings.compressionEnabled)
-
-                    Toggle("Save Original DNG", isOn: $settings.saveOriginalDNG)
-                }
-
                 Section("Capture") {
                     Picker("Flash", selection: $settings.flashMode) {
-                        ForEach(FlashMode.allCases, id: \.self) { mode in
-                            Text(mode.rawValue).tag(mode)
-                        }
+                        ForEach(FlashMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                     }
 
                     Picker("Timer", selection: $settings.timerSeconds) {
@@ -32,8 +18,6 @@ struct SettingsView: View {
                         Text("5s").tag(5)
                         Text("10s").tag(10)
                     }
-
-                    Toggle("Stabilization", isOn: $settings.stabilizationEnabled)
                 }
 
                 Section("Interface") {
@@ -42,62 +26,39 @@ struct SettingsView: View {
                 }
 
                 Section("Gestures") {
-                    HStack {
-                        Text("Tap")
-                        Spacer()
-                        Text("Focus & Expose")
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Text("Long Press")
-                        Spacer()
-                        Text("Lock AE/AF")
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Text("Pinch")
-                        Spacer()
-                        Text("Zoom")
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Text("Swipe Left/Right")
-                        Spacer()
-                        Text("Switch Lens")
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Text("Drag Up/Down")
-                        Spacer()
-                        Text("Exposure Compensation")
-                            .foregroundColor(.secondary)
-                    }
+                    row("Tap", "Focus & Expose")
+                    row("Double Tap", "Switch Lens")
+                    row("Pinch", "Zoom")
+                    row("Swipe Left/Right", "Switch Lens")
+                    row("Drag Up/Down", "Exposure")
+                }
+
+                Section("Output") {
+                    row("Photo", "3× ProRAW DNG (48MP)")
+                    row("Video", "ProRes 422 HQ (.mov)")
+                    row("Editable in", "Lightroom / Capture One / Affinity")
                 }
 
                 Section("About") {
-                    HStack {
-                        Text("Version")
-                        Spacer()
-                        Text("1.0")
-                            .foregroundColor(.secondary)
-                    }
-                    HStack {
-                        Text("Output")
-                        Spacer()
-                        Text("3× 48MP TIFF Multi-Page")
-                            .foregroundColor(.secondary)
-                            .font(.system(size: 13))
-                    }
+                    row("Version", "1.0")
+                    row("Min Device", "iPhone 14 Pro")
                 }
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") { dismiss() }
-                        .fontWeight(.semibold)
+                    Button("Done") { dismiss() }.fontWeight(.semibold)
                 }
             }
+        }
+    }
+
+    private func row(_ left: String, _ right: String) -> some View {
+        HStack {
+            Text(left)
+            Spacer()
+            Text(right).foregroundColor(.secondary).font(.system(size: 13))
         }
     }
 }
