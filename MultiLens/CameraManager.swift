@@ -412,20 +412,18 @@ final class CameraManager: NSObject, ObservableObject {
         session.beginConfiguration()
 
         // Add inputs
-        let deviceTypes: [(LensType, WritableKeyPath<CameraManager, AVCaptureDeviceInput?>)] = [
-            (.ultraWide, \.ultraWideInput),
-            (.wide, \.wideInput),
-            (.telephoto, \.telephotoInput)
-        ]
-
-        for (lens, kp) in deviceTypes {
+        for lens in LensType.allCases {
             guard let device = AVCaptureDevice.default(lens.deviceType, for: .video, position: .back),
                   let input = try? AVCaptureDeviceInput(device: device)
             else { continue }
 
             if session.canAddInput(input) {
                 session.addInput(input)
-                self[keyPath: kp] = input
+                switch lens {
+                case .ultraWide: ultraWideInput = input
+                case .wide: wideInput = input
+                case .telephoto: telephotoInput = input
+                }
             }
         }
 
