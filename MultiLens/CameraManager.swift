@@ -233,12 +233,12 @@ final class CameraManager: NSObject, ObservableObject {
             return
         }
 
-        // ProRes 4444 — highest quality internal recording possible
-        // Bypasses SSD requirement by using AVAssetWriter directly
-        // 12-bit, full dynamic range, closest to RAW you can get without external recorder
+        // ProRes 422 HQ — max hardware-encoded codec on iPhone
+        // Bypasses Apple's SSD requirement by using AVAssetWriter directly
+        // instead of AVCaptureMovieFileOutput which enforces external storage
         let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.proRes4444,
+            AVVideoCodecKey: AVVideoCodecType.proRes422HQ,
             AVVideoWidthKey: Int(dimensions.width),
             AVVideoHeightKey: Int(dimensions.height),
             AVVideoColorPropertiesKey: [
