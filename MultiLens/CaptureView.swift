@@ -92,9 +92,6 @@ struct MainCameraView: View {
                 VStack(spacing: 0) {
                     Spacer()
 
-                    if camera.thermalWarning {
-                        ThermalBanner().padding(.bottom, 8)
-                    }
 
                     if case .countdown(let s) = camera.captureState {
                         CountdownDisplay(seconds: s).padding(.bottom, 16)
