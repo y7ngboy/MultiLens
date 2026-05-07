@@ -107,18 +107,16 @@ final class CameraManager: NSObject, ObservableObject {
             return
         }
 
+        session = AVCaptureMultiCamSession()
+        previewLayer = AVCaptureVideoPreviewLayer(sessionWithNoConnection: session)
+        previewLayer.videoGravity = .resizeAspectFill
+
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.session = AVCaptureMultiCamSession()
-
-            DispatchQueue.main.sync {
-                self.previewLayer = AVCaptureVideoPreviewLayer(session: self.session)
-                self.previewLayer.videoGravity = .resizeAspectFill
-            }
-
             self.setupSession()
             self.session.startRunning()
             DispatchQueue.main.async {
+                self.objectWillChange.send()
                 self.updateDeviceInfo()
             }
         }
@@ -127,7 +125,7 @@ final class CameraManager: NSObject, ObservableObject {
 
     func stopSession() {
         sessionQueue.async { [weak self] in
-            self?.session.stopRunning()
+            self?.session?.stopRunning()
         }
     }
 
@@ -644,16 +642,20 @@ final class CameraManager: NSObject, ObservableObject {
 
         session.commitConfiguration()
 
-        // Set initial frame rate
+        // Set initial frame rate (only if supported by active format)
         if let device = wideInput?.device {
             let fps = settings.frameRate.value
             let duration = CMTimeMake(value: 1, timescale: Int32(fps))
-            do {
-                try device.lockForConfiguration()
-                device.activeVideoMinFrameDuration = duration
-                device.activeVideoMaxFrameDuration = duration
-                device.unlockForConfiguration()
-            } catch {}
+            let ranges = device.activeFormat.videoSupportedFrameRateRanges
+            let supported = ranges.contains { duration >= $0.minFrameDuration && duration <= $0.maxFrameDuration }
+            if supported {
+                do {
+                    try device.lockForConfiguration()
+                    device.activeVideoMinFrameDuration = duration
+                    device.activeVideoMaxFrameDuration = duration
+                    device.unlockForConfiguration()
+                } catch {}
+            }
         }
     }
 
