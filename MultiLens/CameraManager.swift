@@ -594,7 +594,7 @@ final class CameraManager: NSObject, ObservableObject {
         }
 
         // Video data output — try Bayer RAW first
-        let availableFormats = videoDataOutput.availableVideoCVPixelFormatTypes
+        let availableFormats = videoDataOutput.availableVideoPixelFormatTypes
         let bayerFormats: [OSType] = [
             kCVPixelFormatType_14Bayer_RGGB, kCVPixelFormatType_14Bayer_BGGR,
             kCVPixelFormatType_14Bayer_GBRG, kCVPixelFormatType_14Bayer_GRBG
