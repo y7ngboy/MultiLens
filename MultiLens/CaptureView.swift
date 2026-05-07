@@ -93,9 +93,6 @@ struct MainCameraView: View {
                     Spacer()
 
 
-                    if case .countdown(let s) = camera.captureState {
-                        CountdownDisplay(seconds: s).padding(.bottom, 16)
-                    }
 
                     if camera.isRecording {
                         RecordingIndicator(duration: camera.recordingDuration)
