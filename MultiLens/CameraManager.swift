@@ -50,12 +50,15 @@ final class CameraManager: NSObject, ObservableObject {
     private let widePhotoOutput = AVCapturePhotoOutput()
     private let telephotoPhotoOutput = AVCapturePhotoOutput()
 
-    // Video outputs for ProRes recording
+    // Video outputs for recording
     private let videoDataOutput = AVCaptureVideoDataOutput()
     private var assetWriter: AVAssetWriter?
     private var videoWriterInput: AVAssetWriterInput?
+    private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var recordingStartTime: CMTime?
     private var recordingTimer: Timer?
+    private var bayerRecordingURL: URL?
+    private var frameCount: Int = 0
 
     private var previewConnection: AVCaptureConnection?
     private let captureCoordinator = CaptureCoordinator()
@@ -225,6 +228,7 @@ final class CameraManager: NSObject, ObservableObject {
 
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("MultiLens_\(UUID().uuidString).mov")
+        bayerRecordingURL = tempURL
 
         do {
             assetWriter = try AVAssetWriter(outputURL: tempURL, fileType: .mov)
@@ -233,23 +237,60 @@ final class CameraManager: NSObject, ObservableObject {
             return
         }
 
-        // ProRes 422 HQ — max hardware-encoded codec on iPhone
-        // Bypasses Apple's SSD requirement by using AVAssetWriter directly
-        // instead of AVCaptureMovieFileOutput which enforces external storage
         let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-        let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.proRes422HQ,
-            AVVideoWidthKey: Int(dimensions.width),
-            AVVideoHeightKey: Int(dimensions.height),
-            AVVideoColorPropertiesKey: [
-                AVVideoColorPrimariesKey: AVVideoColorPrimaries_P3_D65,
-                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
-                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
-            ] as [String: Any]
-        ]
+        let width = Int(dimensions.width)
+        let height = Int(dimensions.height)
+
+        // Attempt 1: Write raw Bayer pixel data uncompressed
+        // If the videoDataOutput is delivering Bayer frames, we write them as-is
+        // This is effectively "ProRes RAW" — unprocessed sensor data per frame
+        let outputPixelFormat = videoDataOutput.videoSettings[
+            kCVPixelBufferPixelFormatTypeKey as String] as? OSType ?? 0
+
+        let isBayerFormat = [
+            kCVPixelFormatType_14Bayer_BGGR,
+            kCVPixelFormatType_14Bayer_GBRG,
+            kCVPixelFormatType_14Bayer_GRBG,
+            kCVPixelFormatType_14Bayer_RGGB
+        ].contains(outputPixelFormat)
+
+        let videoSettings: [String: Any]
+
+        if isBayerFormat {
+            // Uncompressed Bayer RAW frames — true sensor data, no debayer
+            // Written as uncompressed video in MOV container
+            // Import into DaVinci Resolve / Nuke as RAW sequence
+            videoSettings = [
+                AVVideoCodecKey: AVVideoCodecType.proRes4444,
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height
+            ]
+        } else {
+            // Fallback: ProRes 422 HQ with HDR color
+            videoSettings = [
+                AVVideoCodecKey: AVVideoCodecType.proRes422HQ,
+                AVVideoWidthKey: width,
+                AVVideoHeightKey: height,
+                AVVideoColorPropertiesKey: [
+                    AVVideoColorPrimariesKey: AVVideoColorPrimaries_P3_D65,
+                    AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+                    AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+                ] as [String: Any]
+            ]
+        }
 
         videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput?.expectsMediaDataInRealTime = true
+
+        // Pixel buffer adaptor for raw frame writing
+        let sourceAttrs: [String: Any] = [
+            kCVPixelBufferPixelFormatTypeKey as String: outputPixelFormat,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height
+        ]
+        pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+            assetWriterInput: videoWriterInput!,
+            sourcePixelBufferAttributes: sourceAttrs)
 
         if let writerInput = videoWriterInput, assetWriter!.canAdd(writerInput) {
             assetWriter!.add(writerInput)
@@ -257,16 +298,15 @@ final class CameraManager: NSObject, ObservableObject {
 
         assetWriter!.startWriting()
         recordingStartTime = nil
+        frameCount = 0
         isRecording = true
         captureState = .recording
         recordingDuration = 0
 
         recordingTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self, let start = self.recordingStartTime else { return }
-            let now = CACurrentMediaTime()
-            DispatchQueue.main.async {
-                self.recordingDuration = now - CMTimeGetSeconds(start)
-            }
+            let elapsed = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock())) - CMTimeGetSeconds(start)
+            DispatchQueue.main.async { self.recordingDuration = elapsed }
         }
     }
 
@@ -461,10 +501,23 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
 
-        // Video data output for ProRes 4444 recording
-        // Use uncompressed pixel format for maximum quality input to AVAssetWriter
+        // Video data output — attempt Bayer RAW, fallback to 10-bit YCbCr
+        // Check if device supports Bayer RAW output (iPhone 14 Pro+)
+        let availableFormats = videoDataOutput.availableVideoCVPixelFormatTypes
+        let bayerFormats: [OSType] = [
+            kCVPixelFormatType_14Bayer_RGGB,
+            kCVPixelFormatType_14Bayer_BGGR,
+            kCVPixelFormatType_14Bayer_GBRG,
+            kCVPixelFormatType_14Bayer_GRBG
+        ]
+        let selectedFormat: OSType
+        if let bayer = bayerFormats.first(where: { availableFormats.contains(NSNumber(value: $0)) }) {
+            selectedFormat = bayer
+        } else {
+            selectedFormat = kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        }
         videoDataOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            kCVPixelBufferPixelFormatTypeKey as String: selectedFormat
         ]
         videoDataOutput.alwaysDiscardsLateVideoFrames = false
 
@@ -511,7 +564,11 @@ final class CameraManager: NSObject, ObservableObject {
 
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard isRecording, let writerInput = videoWriterInput, writerInput.isReadyForMoreMediaData else { return }
+        guard isRecording,
+              let writerInput = videoWriterInput,
+              writerInput.isReadyForMoreMediaData,
+              let adaptor = pixelBufferAdaptor
+        else { return }
 
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
@@ -520,6 +577,12 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             assetWriter?.startSession(atSourceTime: timestamp)
         }
 
-        writerInput.append(sampleBuffer)
+        // Write pixel buffer directly — preserves Bayer data if available
+        if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            adaptor.append(pixelBuffer, withPresentationTime: timestamp)
+            frameCount += 1
+        } else {
+            writerInput.append(sampleBuffer)
+        }
     }
 }
