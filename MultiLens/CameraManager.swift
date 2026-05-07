@@ -27,7 +27,6 @@ enum CaptureState: Equatable {
 }
 
 final class CameraManager: NSObject, ObservableObject {
-    // MARK: - Published State
     @Published var captureState: CaptureState = .idle
     @Published var previewLens: LensType = .wide
     @Published var lastSaveCount = 0
@@ -35,7 +34,6 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var toastMessage = ""
     @Published var thermalWarning = false
 
-    // Manual controls
     @Published var iso: Float = 100
     @Published var shutterSpeed: Double = 1.0/48.0
     @Published var shutterAngle: Double = 180
@@ -50,26 +48,19 @@ final class CameraManager: NSObject, ObservableObject {
     @Published var isManualFocus = false
     @Published var isManualWB = false
 
-    // Recording
     @Published var isRecording = false
     @Published var recordingDuration: TimeInterval = 0
-
-    // Device info
     @Published var isoRange: (Float, Float) = (32, 3200)
     @Published var currentFPS: Double = 24
+    @Published var availableLenses: [LensType] = []
 
-    private(set) var session: AVCaptureMultiCamSession!
-    private(set) var previewLayer: AVCaptureVideoPreviewLayer!
+    let session = AVCaptureSession()
+    private(set) var previewLayer: AVCaptureVideoPreviewLayer?
 
-    private var ultraWideInput: AVCaptureDeviceInput?
-    private var wideInput: AVCaptureDeviceInput?
-    private var telephotoInput: AVCaptureDeviceInput?
-
-    private let ultraWidePhotoOutput = AVCapturePhotoOutput()
-    private let widePhotoOutput = AVCapturePhotoOutput()
-    private let telephotoPhotoOutput = AVCapturePhotoOutput()
-
+    private var currentInput: AVCaptureDeviceInput?
+    private let photoOutput = AVCapturePhotoOutput()
     private let videoDataOutput = AVCaptureVideoDataOutput()
+
     private var assetWriter: AVAssetWriter?
     private var videoWriterInput: AVAssetWriterInput?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
@@ -77,43 +68,33 @@ final class CameraManager: NSObject, ObservableObject {
     private var recordingTimer: Timer?
     private var frameCount: Int = 0
 
-    private var previewConnection: AVCaptureConnection?
-    private let captureCoordinator = CaptureCoordinator()
     private let sessionQueue = DispatchQueue(label: "com.multilens.session")
     private let recordingQueue = DispatchQueue(label: "com.multilens.recording")
     private var countdownTimer: Timer?
+    private var capturedPhotos: [LensType: AVCapturePhoto] = [:]
+    private var pendingLenses: [LensType] = []
 
     var settings = CaptureSettings()
 
     var activeDevice: AVCaptureDevice? {
-        switch previewLens {
-        case .ultraWide: return ultraWideInput?.device
-        case .wide: return wideInput?.device
-        case .telephoto: return telephotoInput?.device
-        }
+        currentInput?.device
     }
 
-    static var isSupported: Bool {
-        AVCaptureMultiCamSession.isMultiCamSupported
-    }
+    static var isSupported: Bool { true }
 
     override init() {
         super.init()
+        session.sessionPreset = .photo
+        previewLayer = AVCaptureVideoPreviewLayer(session: session)
+        previewLayer?.videoGravity = .resizeAspectFill
     }
 
     func configure() {
-        guard AVCaptureMultiCamSession.isMultiCamSupported else {
-            DispatchQueue.main.async { self.captureState = .error("MultiCam not supported") }
-            return
-        }
-
-        session = AVCaptureMultiCamSession()
-        previewLayer = AVCaptureVideoPreviewLayer(sessionWithNoConnection: session)
-        previewLayer.videoGravity = .resizeAspectFill
+        detectAvailableLenses()
 
         sessionQueue.async { [weak self] in
             guard let self else { return }
-            self.setupSession()
+            self.setupSession(for: self.previewLens)
             self.session.startRunning()
             DispatchQueue.main.async {
                 self.objectWillChange.send()
@@ -125,8 +106,85 @@ final class CameraManager: NSObject, ObservableObject {
 
     func stopSession() {
         sessionQueue.async { [weak self] in
-            self?.session?.stopRunning()
+            self?.session.stopRunning()
         }
+    }
+
+    private func detectAvailableLenses() {
+        var lenses: [LensType] = []
+        for lens in LensType.allCases {
+            if AVCaptureDevice.default(lens.deviceType, for: .video, position: .back) != nil {
+                lenses.append(lens)
+            }
+        }
+        DispatchQueue.main.async { self.availableLenses = lenses }
+        if !lenses.contains(previewLens) {
+            previewLens = lenses.first ?? .wide
+        }
+    }
+
+    // MARK: - Session Setup
+
+    private func setupSession(for lens: LensType) {
+        session.beginConfiguration()
+
+        // Remove old input
+        if let old = currentInput {
+            session.removeInput(old)
+        }
+
+        // Add new input
+        guard let device = AVCaptureDevice.default(lens.deviceType, for: .video, position: .back),
+              let input = try? AVCaptureDeviceInput(device: device)
+        else {
+            session.commitConfiguration()
+            return
+        }
+
+        if session.canAddInput(input) {
+            session.addInput(input)
+            currentInput = input
+        }
+
+        // Photo output (add only once)
+        if photoOutput.connections.isEmpty && session.canAddOutput(photoOutput) {
+            session.addOutput(photoOutput)
+            photoOutput.maxPhotoQualityPrioritization = .quality
+            if photoOutput.isAppleProRAWSupported {
+                photoOutput.isAppleProRAWEnabled = true
+            }
+        }
+
+        // Video data output (add only once)
+        if videoDataOutput.connections.isEmpty && session.canAddOutput(videoDataOutput) {
+            videoDataOutput.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            ]
+            videoDataOutput.alwaysDiscardsLateVideoFrames = false
+            session.addOutput(videoDataOutput)
+            videoDataOutput.setSampleBufferDelegate(self, queue: recordingQueue)
+        }
+
+        session.commitConfiguration()
+    }
+
+    // MARK: - Switch Lens
+
+    func switchPreview(to lens: LensType) {
+        guard availableLenses.contains(lens) else { return }
+        previewLens = lens
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.setupSession(for: lens)
+            DispatchQueue.main.async { self.updateDeviceInfo() }
+        }
+    }
+
+    func switchToNextLens() {
+        let lenses = availableLenses
+        guard let idx = lenses.firstIndex(of: previewLens) else { return }
+        let next = lenses[(idx + 1) % lenses.count]
+        switchPreview(to: next)
     }
 
     // MARK: - Manual Controls
@@ -138,10 +196,7 @@ final class CameraManager: NSObject, ObservableObject {
             try device.lockForConfiguration()
             device.setExposureModeCustom(duration: AVCaptureDevice.currentExposureDuration, iso: clamped)
             device.unlockForConfiguration()
-            DispatchQueue.main.async {
-                self.iso = clamped
-                self.isManualExposure = true
-            }
+            DispatchQueue.main.async { self.iso = clamped; self.isManualExposure = true }
         } catch {}
     }
 
@@ -152,10 +207,7 @@ final class CameraManager: NSObject, ObservableObject {
             try device.lockForConfiguration()
             device.setExposureModeCustom(duration: cmTime, iso: AVCaptureDevice.currentISO)
             device.unlockForConfiguration()
-            DispatchQueue.main.async {
-                self.shutterSpeed = duration
-                self.isManualExposure = true
-            }
+            DispatchQueue.main.async { self.shutterSpeed = duration; self.isManualExposure = true }
         } catch {}
     }
 
@@ -168,22 +220,17 @@ final class CameraManager: NSObject, ObservableObject {
 
     func setWhiteBalance(temperature: Float, tint: Float) {
         guard let device = activeDevice else { return }
-        let temperatureAndTint = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(
-            temperature: temperature, tint: tint)
-        var gains = device.deviceWhiteBalanceGains(for: temperatureAndTint)
-        let maxGain = device.maxWhiteBalanceGain
-        gains.redGain = min(max(gains.redGain, 1.0), maxGain)
-        gains.greenGain = min(max(gains.greenGain, 1.0), maxGain)
-        gains.blueGain = min(max(gains.blueGain, 1.0), maxGain)
+        let tv = AVCaptureDevice.WhiteBalanceTemperatureAndTintValues(temperature: temperature, tint: tint)
+        var gains = device.deviceWhiteBalanceGains(for: tv)
+        let maxG = device.maxWhiteBalanceGain
+        gains.redGain = min(max(gains.redGain, 1.0), maxG)
+        gains.greenGain = min(max(gains.greenGain, 1.0), maxG)
+        gains.blueGain = min(max(gains.blueGain, 1.0), maxG)
         do {
             try device.lockForConfiguration()
             device.setWhiteBalanceModeLocked(with: gains)
             device.unlockForConfiguration()
-            DispatchQueue.main.async {
-                self.whiteBalance = temperature
-                self.tint = tint
-                self.isManualWB = true
-            }
+            DispatchQueue.main.async { self.whiteBalance = temperature; self.tint = tint; self.isManualWB = true }
         } catch {}
     }
 
@@ -199,15 +246,11 @@ final class CameraManager: NSObject, ObservableObject {
 
     func setManualFocus(_ position: Float) {
         guard let device = activeDevice else { return }
-        let clamped = min(max(position, 0), 1)
         do {
             try device.lockForConfiguration()
-            device.setFocusModeLocked(lensPosition: clamped)
+            device.setFocusModeLocked(lensPosition: min(max(position, 0), 1))
             device.unlockForConfiguration()
-            DispatchQueue.main.async {
-                self.manualFocusPosition = clamped
-                self.isManualFocus = true
-            }
+            DispatchQueue.main.async { self.manualFocusPosition = position; self.isManualFocus = true }
         } catch {}
     }
 
@@ -234,6 +277,8 @@ final class CameraManager: NSObject, ObservableObject {
     func setFrameRate(_ fps: Double) {
         guard let device = activeDevice else { return }
         let duration = CMTimeMake(value: 1, timescale: Int32(fps))
+        let ranges = device.activeFormat.videoSupportedFrameRateRanges
+        guard ranges.contains(where: { fps >= $0.minFrameRate && fps <= $0.maxFrameRate }) else { return }
         do {
             try device.lockForConfiguration()
             device.activeVideoMinFrameDuration = duration
@@ -243,7 +288,7 @@ final class CameraManager: NSObject, ObservableObject {
         } catch {}
     }
 
-    // MARK: - Photo Capture (3x ProRAW DNG)
+    // MARK: - Photo Capture
 
     func captureAll() {
         guard case .idle = captureState else { return }
@@ -260,44 +305,51 @@ final class CameraManager: NSObject, ObservableObject {
         captureState = .countdown(remaining)
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
             remaining -= 1
-            if remaining <= 0 {
-                timer.invalidate()
-                self?.triggerCapture()
-            } else {
-                DispatchQueue.main.async { self?.captureState = .countdown(remaining) }
-            }
+            if remaining <= 0 { timer.invalidate(); self?.triggerCapture() }
+            else { DispatchQueue.main.async { self?.captureState = .countdown(remaining) } }
         }
     }
 
     private func triggerCapture() {
         captureState = .capturing
-        if settings.hapticEnabled {
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        }
+        if settings.hapticEnabled { UIImpactFeedbackGenerator(style: .medium).impactOccurred() }
 
-        captureCoordinator.reset()
-        captureCoordinator.onAllCaptured = { [weak self] photos in
-            self?.savePhotos(photos)
-        }
-        captureCoordinator.onError = { [weak self] msg in
-            DispatchQueue.main.async { self?.captureState = .error(msg) }
-        }
-
-        firePhoto(output: ultraWidePhotoOutput)
-        firePhoto(output: widePhotoOutput)
-        firePhoto(output: telephotoPhotoOutput)
+        // Capture from all available lenses sequentially
+        capturedPhotos.removeAll()
+        pendingLenses = availableLenses
+        captureNextLens()
     }
 
-    private func firePhoto(output: AVCapturePhotoOutput) {
+    private func captureNextLens() {
+        guard !pendingLenses.isEmpty else {
+            // All done — save
+            savePhotos(capturedPhotos)
+            return
+        }
+
+        let lens = pendingLenses.removeFirst()
+
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.setupSession(for: lens)
+
+            // Small delay for camera to stabilize
+            Thread.sleep(forTimeInterval: 0.3)
+
+            DispatchQueue.main.async {
+                self.firePhoto(forLens: lens)
+            }
+        }
+    }
+
+    private func firePhoto(forLens lens: LensType) {
         let photoSettings: AVCapturePhotoSettings
 
-        if output.isAppleProRAWEnabled,
-           let rawFormat = output.availableRawPhotoPixelFormatTypes.first {
+        if photoOutput.isAppleProRAWEnabled,
+           let rawFormat = photoOutput.availableRawPhotoPixelFormatTypes.first {
             photoSettings = AVCapturePhotoSettings(rawPixelFormatType: rawFormat)
         } else {
-            photoSettings = AVCapturePhotoSettings(format: [
-                AVVideoCodecKey: AVVideoCodecType.hevc
-            ])
+            photoSettings = AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
         }
 
         photoSettings.photoQualityPrioritization = .quality
@@ -308,8 +360,11 @@ final class CameraManager: NSObject, ObservableObject {
         case .auto: photoSettings.flashMode = .auto
         }
 
-        output.capturePhoto(with: photoSettings, delegate: captureCoordinator)
+        currentCaptureLens = lens
+        photoOutput.capturePhoto(with: photoSettings, delegate: self)
     }
+
+    private var currentCaptureLens: LensType = .wide
 
     private func savePhotos(_ photos: [LensType: AVCapturePhoto]) {
         DispatchQueue.main.async { self.captureState = .saving }
@@ -328,9 +383,8 @@ final class CameraManager: NSObject, ObservableObject {
 
                 group.enter()
                 PHPhotoLibrary.shared().performChanges {
-                    let request = PHAssetCreationRequest.forAsset()
-                    let resourceType: PHAssetResourceType = photo.isRawPhoto ? .alternatePhoto : .photo
-                    request.addResource(with: resourceType, fileURL: tempURL, options: nil)
+                    let req = PHAssetCreationRequest.forAsset()
+                    req.addResource(with: photo.isRawPhoto ? .alternatePhoto : .photo, fileURL: tempURL, options: nil)
                 } completionHandler: { success, _ in
                     if success { savedCount += 1 }
                     try? FileManager.default.removeItem(at: tempURL)
@@ -345,6 +399,8 @@ final class CameraManager: NSObject, ObservableObject {
                 self.toastMessage = "\(savedCount) ProRAW DNG saved"
                 self.showToast = true
                 self.captureState = .idle
+                // Restore preview lens
+                self.switchPreview(to: self.previewLens)
                 if self.settings.hapticEnabled {
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                 }
@@ -364,32 +420,16 @@ final class CameraManager: NSObject, ObservableObject {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("MultiLens_\(UUID().uuidString).mov")
 
-        do {
-            assetWriter = try AVAssetWriter(outputURL: tempURL, fileType: .mov)
-        } catch {
-            captureState = .error("Cannot create writer: \(error.localizedDescription)")
-            return
-        }
+        do { assetWriter = try AVAssetWriter(outputURL: tempURL, fileType: .mov) }
+        catch { captureState = .error("Writer error"); return }
 
-        let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
-        let width = Int(dimensions.width)
-        let height = Int(dimensions.height)
-
-        // Check if we got Bayer RAW frames
-        let outputPixelFormat = videoDataOutput.videoSettings[
-            kCVPixelBufferPixelFormatTypeKey as String] as? OSType ?? 0
-        let bayerFormats: [OSType] = [
-            kCVPixelFormatType_14Bayer_BGGR, kCVPixelFormatType_14Bayer_GBRG,
-            kCVPixelFormatType_14Bayer_GRBG, kCVPixelFormatType_14Bayer_RGGB
-        ]
-        let isBayer = bayerFormats.contains(outputPixelFormat)
+        let dims = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
 
         var videoSettings: [String: Any] = [
-            AVVideoCodecKey: isBayer ? AVVideoCodecType.proRes4444 : settings.videoCodec.avCodecType,
-            AVVideoWidthKey: width,
-            AVVideoHeightKey: height
+            AVVideoCodecKey: settings.videoCodec.avCodecType,
+            AVVideoWidthKey: Int(dims.width),
+            AVVideoHeightKey: Int(dims.height)
         ]
-
         if let colorProps = settings.colorSpace.videoColorProperties {
             videoSettings[AVVideoColorPropertiesKey] = colorProps
         }
@@ -397,17 +437,17 @@ final class CameraManager: NSObject, ObservableObject {
         videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
         videoWriterInput?.expectsMediaDataInRealTime = true
 
+        let pixelFormat = videoDataOutput.videoSettings[kCVPixelBufferPixelFormatTypeKey as String] as? OSType
+            ?? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
         let sourceAttrs: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: outputPixelFormat,
-            kCVPixelBufferWidthKey as String: width,
-            kCVPixelBufferHeightKey as String: height
+            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+            kCVPixelBufferWidthKey as String: Int(dims.width),
+            kCVPixelBufferHeightKey as String: Int(dims.height)
         ]
         pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
             assetWriterInput: videoWriterInput!, sourcePixelBufferAttributes: sourceAttrs)
 
-        if let writerInput = videoWriterInput, assetWriter!.canAdd(writerInput) {
-            assetWriter!.add(writerInput)
-        }
+        if let input = videoWriterInput, assetWriter!.canAdd(input) { assetWriter!.add(input) }
 
         assetWriter!.startWriting()
         recordingStartTime = nil
@@ -433,12 +473,9 @@ final class CameraManager: NSObject, ObservableObject {
 
         writer.finishWriting { [weak self] in
             guard writer.status == .completed else {
-                DispatchQueue.main.async {
-                    self?.captureState = .error("Recording failed: \(writer.error?.localizedDescription ?? "unknown")")
-                }
+                DispatchQueue.main.async { self?.captureState = .error("Recording failed") }
                 return
             }
-
             PHPhotoLibrary.shared().performChanges {
                 PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: writer.outputURL)
             } completionHandler: { success, _ in
@@ -446,18 +483,15 @@ final class CameraManager: NSObject, ObservableObject {
                 DispatchQueue.main.async {
                     self?.captureState = .idle
                     if success {
-                        self?.toastMessage = "Video saved (\(self?.settings.videoCodec.rawValue ?? "ProRes"))"
+                        self?.toastMessage = "Video saved (\(self?.settings.videoCodec.rawValue ?? ""))"
                         self?.showToast = true
-                        if self?.settings.hapticEnabled == true {
-                            UINotificationFeedbackGenerator().notificationOccurred(.success)
-                        }
                     }
                 }
             }
         }
     }
 
-    // MARK: - Lens & Gestures
+    // MARK: - Gestures
 
     func setZoom(_ factor: CGFloat) {
         guard let device = activeDevice else { return }
@@ -482,26 +516,8 @@ final class CameraManager: NSObject, ObservableObject {
                 device.exposureMode = .autoExpose
             }
             device.unlockForConfiguration()
-            DispatchQueue.main.async {
-                self.focusPoint = point
-                self.isExposureLocked = false
-            }
+            DispatchQueue.main.async { self.focusPoint = point; self.isExposureLocked = false }
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.focusPoint = nil }
-        } catch {}
-    }
-
-    func lockExposure(at point: CGPoint, in viewSize: CGSize) {
-        guard let device = activeDevice, device.isExposurePointOfInterestSupported else { return }
-        let ep = CGPoint(x: point.y / viewSize.height, y: 1.0 - point.x / viewSize.width)
-        do {
-            try device.lockForConfiguration()
-            device.exposurePointOfInterest = ep
-            device.exposureMode = .locked
-            device.unlockForConfiguration()
-            DispatchQueue.main.async {
-                self.isExposureLocked = true
-                self.focusPoint = point
-            }
         } catch {}
     }
 
@@ -517,147 +533,7 @@ final class CameraManager: NSObject, ObservableObject {
         } catch {}
     }
 
-    func switchToNextLens() {
-        let all = LensType.allCases
-        guard let idx = all.firstIndex(of: previewLens) else { return }
-        let next = all[(idx + 1) % all.count]
-        previewLens = next
-        switchPreview(to: next)
-        updateDeviceInfo()
-    }
-
-    func switchPreview(to lens: LensType) {
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            self.session.beginConfiguration()
-
-            if let existing = self.previewConnection {
-                self.session.removeConnection(existing)
-                self.previewConnection = nil
-            }
-
-            let input: AVCaptureDeviceInput?
-            switch lens {
-            case .ultraWide: input = self.ultraWideInput
-            case .wide: input = self.wideInput
-            case .telephoto: input = self.telephotoInput
-            }
-
-            if let input,
-               let port = input.ports(for: .video, sourceDeviceType: lens.deviceType, sourceDevicePosition: .back).first {
-                let conn = AVCaptureConnection(inputPort: port, videoPreviewLayer: self.previewLayer)
-                if self.session.canAddConnection(conn) {
-                    self.session.addConnection(conn)
-                    self.previewConnection = conn
-                }
-            }
-
-            self.session.commitConfiguration()
-        }
-    }
-
-    // MARK: - Session Setup
-
-    private func setupSession() {
-        guard AVCaptureMultiCamSession.isMultiCamSupported else {
-            DispatchQueue.main.async { self.captureState = .error("MultiCam not supported") }
-            return
-        }
-
-        session.beginConfiguration()
-
-        for lens in LensType.allCases {
-            guard let device = AVCaptureDevice.default(lens.deviceType, for: .video, position: .back),
-                  let input = try? AVCaptureDeviceInput(device: device)
-            else { continue }
-
-            if session.canAddInput(input) {
-                session.addInput(input)
-                switch lens {
-                case .ultraWide: ultraWideInput = input
-                case .wide: wideInput = input
-                case .telephoto: telephotoInput = input
-                }
-            }
-        }
-
-        // Photo outputs
-        let outputPairs: [(AVCapturePhotoOutput, AVCaptureDeviceInput?, LensType)] = [
-            (ultraWidePhotoOutput, ultraWideInput, .ultraWide),
-            (widePhotoOutput, wideInput, .wide),
-            (telephotoPhotoOutput, telephotoInput, .telephoto)
-        ]
-
-        for (output, input, lens) in outputPairs {
-            guard let input else { continue }
-            if session.canAddOutput(output) { session.addOutput(output) }
-
-            let ports = input.ports(for: .video, sourceDeviceType: lens.deviceType, sourceDevicePosition: .back)
-            if !ports.isEmpty {
-                let conn = AVCaptureConnection(inputPorts: ports, output: output)
-                if session.canAddConnection(conn) { session.addConnection(conn) }
-            }
-
-            output.maxPhotoQualityPrioritization = .quality
-            if output.isAppleProRAWSupported { output.isAppleProRAWEnabled = true }
-        }
-
-        // Video data output — try Bayer RAW first
-        let availableFormats = videoDataOutput.availableVideoPixelFormatTypes
-        let bayerFormats: [OSType] = [
-            kCVPixelFormatType_14Bayer_RGGB, kCVPixelFormatType_14Bayer_BGGR,
-            kCVPixelFormatType_14Bayer_GBRG, kCVPixelFormatType_14Bayer_GRBG
-        ]
-        let selectedFormat: OSType
-        if let bayer = bayerFormats.first(where: { availableFormats.contains($0) }) {
-            selectedFormat = bayer
-        } else {
-            selectedFormat = kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-        }
-        videoDataOutput.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: selectedFormat]
-        videoDataOutput.alwaysDiscardsLateVideoFrames = false
-
-        if session.canAddOutput(videoDataOutput) {
-            session.addOutput(videoDataOutput)
-            videoDataOutput.setSampleBufferDelegate(self, queue: recordingQueue)
-
-            if let wInput = wideInput {
-                let ports = wInput.ports(for: .video, sourceDeviceType: .builtInWideAngleCamera, sourceDevicePosition: .back)
-                if !ports.isEmpty {
-                    let conn = AVCaptureConnection(inputPorts: ports, output: videoDataOutput)
-                    if session.canAddConnection(conn) { session.addConnection(conn) }
-                }
-            }
-        }
-
-        // Preview — start with wide
-        if let wInput = wideInput,
-           let port = wInput.ports(for: .video, sourceDeviceType: .builtInWideAngleCamera, sourceDevicePosition: .back).first {
-            let conn = AVCaptureConnection(inputPort: port, videoPreviewLayer: previewLayer)
-            if session.canAddConnection(conn) {
-                session.addConnection(conn)
-                previewConnection = conn
-            }
-        }
-
-        session.commitConfiguration()
-
-        // Set initial frame rate (only if supported by active format)
-        if let device = wideInput?.device {
-            let fps = settings.frameRate.value
-            let duration = CMTimeMake(value: 1, timescale: Int32(fps))
-            let ranges = device.activeFormat.videoSupportedFrameRateRanges
-            let supported = ranges.contains { duration >= $0.minFrameDuration && duration <= $0.maxFrameDuration }
-            if supported {
-                do {
-                    try device.lockForConfiguration()
-                    device.activeVideoMinFrameDuration = duration
-                    device.activeVideoMaxFrameDuration = duration
-                    device.unlockForConfiguration()
-                } catch {}
-            }
-        }
-    }
+    // MARK: - Helpers
 
     private func updateDeviceInfo() {
         guard let device = activeDevice else { return }
@@ -676,7 +552,21 @@ final class CameraManager: NSObject, ObservableObject {
     }
 }
 
-// MARK: - Video Recording Delegate
+// MARK: - Photo Delegate
+
+extension CameraManager: AVCapturePhotoCaptureDelegate {
+    func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        guard error == nil else {
+            DispatchQueue.main.async { self.captureState = .error("Capture failed") }
+            return
+        }
+
+        capturedPhotos[currentCaptureLens] = photo
+        captureNextLens()
+    }
+}
+
+// MARK: - Video Delegate
 
 extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -696,8 +586,6 @@ extension CameraManager: AVCaptureVideoDataOutputSampleBufferDelegate {
         if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
             adaptor.append(pixelBuffer, withPresentationTime: timestamp)
             frameCount += 1
-        } else {
-            writerInput.append(sampleBuffer)
         }
     }
 }

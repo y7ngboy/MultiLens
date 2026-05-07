@@ -313,7 +313,7 @@ struct BottomBar: View {
         VStack(spacing: 14) {
             // Lens selector
             HStack(spacing: 4) {
-                ForEach(LensType.allCases, id: \.self) { lens in
+                ForEach(camera.availableLenses, id: \.self) { lens in
                     Button {
                         camera.previewLens = lens
                         camera.switchPreview(to: lens)
