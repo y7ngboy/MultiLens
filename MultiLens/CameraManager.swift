@@ -600,7 +600,7 @@ final class CameraManager: NSObject, ObservableObject {
             kCVPixelFormatType_14Bayer_GBRG, kCVPixelFormatType_14Bayer_GRBG
         ]
         let selectedFormat: OSType
-        if let bayer = bayerFormats.first(where: { availableFormats.contains(NSNumber(value: $0)) }) {
+        if let bayer = bayerFormats.first(where: { availableFormats.contains($0) }) {
             selectedFormat = bayer
         } else {
             selectedFormat = kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
