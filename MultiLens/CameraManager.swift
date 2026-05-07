@@ -233,13 +233,19 @@ final class CameraManager: NSObject, ObservableObject {
             return
         }
 
-        // ProRes 422 HQ — bypasses the external SSD requirement
-        // by writing directly via AVAssetWriter instead of AVCaptureMovieFileOutput
+        // ProRes 4444 — highest quality internal recording possible
+        // Bypasses SSD requirement by using AVAssetWriter directly
+        // 12-bit, full dynamic range, closest to RAW you can get without external recorder
         let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         let videoSettings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.proRes422HQ,
+            AVVideoCodecKey: AVVideoCodecType.proRes4444,
             AVVideoWidthKey: Int(dimensions.width),
-            AVVideoHeightKey: Int(dimensions.height)
+            AVVideoHeightKey: Int(dimensions.height),
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_P3_D65,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_2100_HLG,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_2020
+            ] as [String: Any]
         ]
 
         videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
@@ -455,7 +461,13 @@ final class CameraManager: NSObject, ObservableObject {
             }
         }
 
-        // Add video data output for ProRes recording (connected to active preview lens)
+        // Video data output for ProRes 4444 recording
+        // Use uncompressed pixel format for maximum quality input to AVAssetWriter
+        videoDataOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+        ]
+        videoDataOutput.alwaysDiscardsLateVideoFrames = false
+
         if session.canAddOutput(videoDataOutput) {
             session.addOutput(videoDataOutput)
             videoDataOutput.setSampleBufferDelegate(self, queue: recordingQueue)
