@@ -11,7 +11,7 @@ struct CaptureView: View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if !CameraManager.isSupported {
+            if false {
                 UnsupportedView()
             } else if !permissionGranted {
                 PermissionView { requestPermissions() }
@@ -79,7 +79,7 @@ struct MainCameraView: View {
 
                 // Focus indicator
                 if let point = camera.focusPoint {
-                    FocusIndicator(point: point, locked: camera.isExposureLocked)
+                    FocusIndicator(point: point, locked: false)
                 }
 
                 // Top info bar
@@ -261,11 +261,11 @@ struct ManualControlsPanel: View {
                     Text("\(Int(camera.shutterAngle))°").font(.system(size: 10, design: .monospaced)).foregroundColor(.cyan).frame(width: 40)
                 } else {
                     Slider(value: Binding(
-                        get: { camera.shutterSpeed * 10000 },
-                        set: { camera.setShutterSpeed($0 / 10000) }
-                    ), in: 1...500)
+                        get: { camera.shutterAngle },
+                        set: { camera.setShutterAngle($0) }
+                    ), in: 1...360)
                     .tint(.cyan)
-                    Text("1/\(Int(1.0/camera.shutterSpeed))").font(.system(size: 10, design: .monospaced)).foregroundColor(.cyan).frame(width: 40)
+                    Text("\(Int(camera.shutterAngle))°").font(.system(size: 10, design: .monospaced)).foregroundColor(.cyan).frame(width: 40)
                 }
             }
 
@@ -274,7 +274,7 @@ struct ManualControlsPanel: View {
                 Text("WB").font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.5)).frame(width: 40)
                 Slider(value: Binding(
                     get: { camera.whiteBalance },
-                    set: { camera.setWhiteBalance(temperature: $0, tint: camera.tint) }
+                    set: { camera.setWhiteBalance(temperature: $0) }
                 ), in: 2000...10000)
                 .tint(.orange)
                 Text("\(Int(camera.whiteBalance))K").font(.system(size: 10, design: .monospaced)).foregroundColor(.orange).frame(width: 40)
